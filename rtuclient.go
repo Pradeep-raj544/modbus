@@ -5,16 +5,12 @@
 package modbus
 
 import (
-	"encoding/binary"
 	"fmt"
-	"io"
-	"log"
-	"time"
 )
 
 const (
-	rtuMinSize = 4
-	rtuMaxSize = 256
+	rtuMinLength = 4
+	rtuMaxLength = 256
 )
 
 // RTUClientHandler implements Packager and Transporter interface.
@@ -42,14 +38,14 @@ type rtuPackager struct {
 }
 
 // Encode encodes PDU in a RTU frame:
-//  Slave Address   : 1 byte
+//  Address         : 1 byte
 //  Function        : 1 byte
 //  Data            : 0 up to 252 bytes
 //  CRC             : 2 byte
 func (mb *rtuPackager) Encode(pdu *ProtocolDataUnit) (adu []byte, err error) {
 	length := len(pdu.Data) + 4
-	if length > rtuMaxSize {
-		err = fmt.Errorf("modbus: length of data '%v' must not be bigger than '%v'", length, rtuMaxSize)
+	if length > rtuMaxLength {
+		err = fmt.Errorf("modbus: length of data '%v' must not be bigger than '%v'", length, rtuMaxLength)
 		return
 	}
 	adu = make([]byte, length)
@@ -72,8 +68,8 @@ func (mb *rtuPackager) Encode(pdu *ProtocolDataUnit) (adu []byte, err error) {
 func (mb *rtuPackager) Verify(aduRequest []byte, aduResponse []byte) (err error) {
 	length := len(aduResponse)
 	// Minimum size (including address, function and CRC)
-	if length < rtuMinSize {
-		err = fmt.Errorf("modbus: response length '%v' does not meet minimum '%v'", length, rtuMinSize)
+	if length < rtuMinLength {
+		err = fmt.Errorf("modbus: response length '%v' does not meet minimum '%v'", length, rtuMinLength)
 		return
 	}
 	// Slave address must match
@@ -104,107 +100,33 @@ func (mb *rtuPackager) Decode(adu []byte) (pdu *ProtocolDataUnit, err error) {
 
 // asciiSerialTransporter implements Transporter interface.
 type rtuSerialTransporter struct {
-	serialPort
-
-	Logger *log.Logger
+	// Extended from serialTransporter
+	serialTransporter
 }
 
 func (mb *rtuSerialTransporter) Send(aduRequest []byte) (aduResponse []byte, err error) {
-	if !mb.isConnected {
+	if mb.isConnected() {
+		// flush current data pending in serial port
+	} else {
 		if err = mb.Connect(); err != nil {
 			return
 		}
 		defer mb.Close()
 	}
 	if mb.Logger != nil {
-		mb.Logger.Printf("modbus: sending % x\n", aduRequest)
+		mb.Logger.Printf("modbus: sending %#v\n", aduRequest)
 	}
-	if _, err = mb.port.Write(aduRequest); err != nil {
-		return
-	}
-	function := aduRequest[1]
-	functionFail := aduRequest[1] & 0x80
-	bytesToRead := calculateResponseLength(aduRequest)
-	time.Sleep(mb.calculateDelay(len(aduRequest) + bytesToRead))
-
 	var n int
-	var n1 int
-	var data [rtuMaxSize]byte
-	//We first read the minimum length and then read either the full package
-	//or the error package, depending on the error status (byte 2 of the response)
-	n, err = io.ReadAtLeast(mb.port, data[:], rtuMinSize)
-	if err != nil {
+	if n, err = mb.write(aduRequest); err != nil {
 		return
 	}
-	//if the function is correct
-	if data[1] == function {
-		//we read the rest of the bytes
-		if n < bytesToRead {
-			if bytesToRead > rtuMinSize && bytesToRead <= rtuMaxSize {
-				if bytesToRead > n {
-					n1, err = io.ReadFull(mb.port, data[n:bytesToRead])
-					n += n1
-				}
-			}
-		}
-	} else if data[1] == functionFail {
-		//for error we need to read 5 bytes
-		if n < bytesToRead {
-			n1, err = io.ReadFull(mb.port, data[n:5])
-		}
-		n += n1
-	}
-
-	if err != nil {
+	var data [rtuMaxLength]byte
+	if n, err = mb.read(data[:]); err != nil {
 		return
 	}
 	aduResponse = data[:n]
 	if mb.Logger != nil {
-		mb.Logger.Printf("modbus: received % x\n", aduResponse)
+		mb.Logger.Printf("modbus: received %#v\n", aduResponse)
 	}
 	return
-}
-
-// calculateDelay roughly calculates time needed for the next frame.
-// See MODBUS over Serial Line - Specification and Implementation Guide (page 13).
-func (mb *rtuSerialTransporter) calculateDelay(chars int) time.Duration {
-	var characterDelay, frameDelay int // us
-
-	if mb.BaudRate <= 0 || mb.BaudRate > 19200 {
-		characterDelay = 750
-		frameDelay = 1750
-	} else {
-		characterDelay = 15000000 / mb.BaudRate
-		frameDelay = 35000000 / mb.BaudRate
-	}
-	return time.Duration(characterDelay*chars+frameDelay) * time.Microsecond
-}
-
-func calculateResponseLength(adu []byte) int {
-	length := rtuMinSize
-	switch adu[1] {
-	case FuncCodeReadDiscreteInputs,
-		FuncCodeReadCoils:
-		count := int(binary.BigEndian.Uint16(adu[4:]))
-		length += 1 + count/8
-		if count%8 != 0 {
-			length++
-		}
-	case FuncCodeReadInputRegisters,
-		FuncCodeReadHoldingRegisters,
-		FuncCodeReadWriteMultipleRegisters:
-		count := int(binary.BigEndian.Uint16(adu[4:]))
-		length += 1 + count*2
-	case FuncCodeWriteSingleCoil,
-		FuncCodeWriteMultipleCoils,
-		FuncCodeWriteSingleRegister,
-		FuncCodeWriteMultipleRegisters:
-		length += 4
-	case FuncCodeMaskWriteRegister:
-		length += 6
-	case FuncCodeReadFIFOQueue:
-		// undetermined
-	default:
-	}
-	return length
 }
