@@ -5,7 +5,8 @@
 package modbus
 
 import (
-	"github.com/goburrow/serial"
+	"log"
+	"time"
 )
 
 const (
@@ -13,36 +14,96 @@ const (
 	serialTimeoutMillis = 5000
 )
 
-// serialPort has configuration and I/O controller.
-type serialPort struct {
+// serialConfig is common configuration for serial port.
+type serialConfig struct {
+	// Device path (/dev/ttyS0)
+	Address string
+	// Baud rate (default 19200)
+	BaudRate int
+	// Data bits: 5, 6, 7 or 8 (default 8)
+	DataBits int
+	// Stop bits: 1 or 2 (default 1)
+	StopBits int
+	// Parity: N - None, E - Even, O - Odd (default E)
+	// (The use of no parity requires 2 stop bits.)
+	Parity string
+}
+
+type serialController interface {
+	Connect() (err error)
+	Close() (err error)
+
+	isConnected() bool
+	read(b []byte) (n int, err error)
+	write(b []byte) (n int, err error)
+}
+
+// serialTransporter has configuration and I/O controller and must
+// implicitly implement serialController interface.
+type serialTransporter struct {
 	// Serial port configuration.
-	serial.Config
-	// port is platform-dependent data structure for serial port.
-	port serial.Port
+	serialConfig
+	// serialPort is platform-dependent data structure for serial port.
+	serialPort
+
 	// Read timeout
-	isConnected bool
+	Timeout time.Duration
+	Logger  *log.Logger
 }
 
-func (mb *serialPort) Connect() (err error) {
-	if mb.isConnected {
-		return
-	}
-	if mb.port == nil {
-		mb.port, err = serial.Open(&mb.Config)
-	} else {
-		err = mb.port.Open(&mb.Config)
-	}
-	if err == nil {
-		mb.isConnected = true
-	}
-	return
+// Ensure serialTransporter also implements serialController interface.
+var _ serialController = (*serialTransporter)(nil)// Copyright 2014 Quoc-Viet Nguyen. All rights reserved.
+// This software may be modified and distributed under the terms
+// of the BSD license. See the LICENSE file for details.
+
+package modbus
+
+import (
+	"log"
+	"time"
+)
+
+const (
+	// Default timeout
+	serialTimeoutMillis = 5000
+)
+
+// serialConfig is common configuration for serial port.
+type serialConfig struct {
+	// Device path (/dev/ttyS0)
+	Address string
+	// Baud rate (default 19200)
+	BaudRate int
+	// Data bits: 5, 6, 7 or 8 (default 8)
+	DataBits int
+	// Stop bits: 1 or 2 (default 1)
+	StopBits int
+	// Parity: N - None, E - Even, O - Odd (default E)
+	// (The use of no parity requires 2 stop bits.)
+	Parity string
 }
 
-func (mb *serialPort) Close() (err error) {
-	if !mb.isConnected {
-		return
-	}
-	err = mb.port.Close()
-	mb.isConnected = false
-	return
+type serialController interface {
+	Connect() (err error)
+	Close() (err error)
+
+	isConnected() bool
+	read(b []byte) (n int, err error)
+	write(b []byte) (n int, err error)
 }
+
+// serialTransporter has configuration and I/O controller and must
+// implicitly implement serialController interface.
+type serialTransporter struct {
+	// Serial port configuration.
+	serialConfig
+	// serialPort is platform-dependent data structure for serial port.
+	serialPort
+
+	// Read timeout
+	Timeout time.Duration
+	Logger  *log.Logger
+}
+
+// Ensure serialTransporter also implements serialController interface.
+var _ serialController = (*serialTransporter)(nil)
